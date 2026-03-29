@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arcadia & Yardi RCA Merger</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; line-height: 1.6; background: #eef2f3; color: #333; }
+        .container { max-width: 700px; margin: auto; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+        h2 { color: #1a73e8; margin-top: 0; border-bottom: 2px solid #f1f3f4; padding-bottom: 10px; }
+        .file-section { margin: 25px 0; }
+        label { display: block; margin-bottom: 8px; font-weight: 600; color: #555; }
+        input[type="file"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; background: #fafafa; }
+        button { background: #1a73e8; color: white; border: none; padding: 14px 20px; border-radius: 6px; cursor: pointer; font-size: 16px; width: 100%; font-weight: bold; transition: background 0.3s; margin-top: 10px; }
+        button:hover { background: #1557b0; }
+        #status { margin-top: 25px; padding: 15px; border-radius: 6px; font-weight: 500; text-align: center; }
+        .info-box { background: #e8f0fe; color: #1967d2; padding: 15px; border-radius: 6px; font-size: 0.9em; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>RCA Data Merger Tool</h2>
+    <div class="info-box">
+        <strong>Instructions:</strong> Select the Arcadia file first, then the Yardi Master report. The tool will match Account IDs and Invoice Dates automatically.
+    </div>
+    
+    <div class="file-section">
+        <label>1. Arcadia Delay File (.xlsx or .csv)</label>
+        <input type="file" id="arcadiaFile" accept=".xlsx, .csv">
+    </div>
+
+    <div class="file-section">
+        <label>2. Yardi Master Report (.xlsx or .csv)</label>
+        <input type="file" id="yardiFile" accept=".xlsx, .csv">
+    </div>
+
+    <button id="processBtn">Combine Files & Download</button>
+    
+    <div id="status"></div>
+</div>
+
+<script>
+    document.getElementById('processBtn').addEventListener('click', async () => {
+        const arcadiaFile = document.getElementById('arcadiaFile').files[0];
+        const yardiFile = document.getElementById('yardiFile').files[0];
+        const statusDiv = document.getElementById('status');
+
+        if (!arcadiaFile || !yardiFile) {
+            alert("Please upload both files to continue.");
+            return;
+        }
+
+        statusDiv.style.background = "#fff3cd";
+        statusDiv.innerText = "Processing data... this may take a moment.";
+
+        try {
+            const arcadiaData = await readExcel(arcadiaFile);
+            const yardiData = await readExcel(yardiFile);
+
+            // Create a lookup dictionary from Yardi Data
+            const yardiLookup = {};
+            yardiData.forEach(row => {
+                const id = String(row.accountId || "").replace('act_', '').trim();
+                const possibleDates = [row.StmtDate, row.AvailableDateUnadjusted, row.intervalEndDate];
+                
+                possibleDates.forEach(d => {
+                    if (d) {
+                        const dateKey = formatDate(d);
+                        const compositeKey = `${id}|${dateKey}`;
+                        if (!yardiLookup[compositeKey]) {
+                            yardiLookup[compositeKey] = {
+                                "Final 4 Biz Days": row["Final 4 Biz Days"] || "",
+                                "RCA": row["RCA"] || "",
+                                "RCA Details": row["RCA Details"] || ""
+                            };
+                        }
+                    }
+                });
+            });
+
+            // Apply lookup to Arcadia Data
+            const finalMerged = arcadiaData.map(row => {
+                const id = String(row["Account ID"] || "").replace('act_', '').trim();
+                const dateKey = formatDate(row["Invoice Date"]);
+                const compositeKey = `${id}|${dateKey}`;
+                
+                const match = yardiLookup[compositeKey] || { "Final 4 Biz Days": "No Match Found", "RCA": "", "RCA Details": "" };
+                
+                return {
+                    ...row,
+                    "Final 4 Biz Days": match["Final 4 Biz Days"],
+                    "RCA": match["RCA"],
+                    "RCA Details": match["RCA Details"]
+                };
+            });
+
+            // Export to Excel
+            const ws = XLSX.utils.json_to_sheet(finalMerged);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Combined_Data");
+            XLSX.writeFile(wb, "Combined_RCA_Report.xlsx");
+
+            statusDiv.style.background = "#d4edda";
+            statusDiv.style.color = "#155724";
+            statusDiv.innerText = "Success! Your combined file has been downloaded.";
+
+        } catch (e) {
+            console.error(e);
+            statusDiv.style.background = "#f8d7da";
+            statusDiv.style.color = "#721c24";
+            statusDiv.innerText = "Error: Please check file formats and try again.";
+        }
+    });
+
+    function readExcel(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+                const firstSheet = workbook.SheetNames[0];
+                resolve(XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet]));
+            };
+            reader.onerror = reject;
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    function formatDate(date) {
+        if (!date) return "";
+        const d = new Date(date);
+        if (isNaN(d.getTime())) return String(date).split(' ')[0];
+        return d.toISOString().split('T')[0];
+    }
+</script>
+
+</body>
+</html>
