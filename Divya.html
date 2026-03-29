@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Arcadia & Yardi RCA Merger</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; line-height: 1.6; background: #f4f7f6; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .file-input { border: 2px dashed #ccc; padding: 20px; text-align: center; margin-bottom: 20px; cursor: pointer; }
+        .file-input:hover { border-color: #2196F3; }
+        button { background: #2196F3; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; width: 100%; }
+        button:disabled { background: #ccc; }
+        #status { margin-top: 20px; font-weight: bold; color: #333; }
+        .instructions { font-size: 0.9em; color: #666; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>RCA Data Merger</h2>
+    <p class="instructions">Select both the <b>Arcadia</b> and <b>Yardi</b> files. The tool will match them based on Account ID and Invoice Date automatically.</p>
+    
+    <label><b>1. Select Arcadia File:</b></label>
+    <input type="file" id="arcadiaFile" class="file-input" accept=".xlsx, .csv"><br><br>
+
+    <label><b>2. Select Yardi Report:</b></label>
+    <input type="file" id="yardiFile" class="file-input" accept=".xlsx, .csv"><br><br>
+
+    <button id="processBtn">Process and Download Combined File</button>
+    
+    <div id="status"></div>
+</div>
+
+<script>
+    document.getElementById('processBtn').addEventListener('click', async () => {
+        const arcadiaFile = document.getElementById('arcadiaFile').files[0];
+        const yardiFile = document.getElementById('yardiFile').files[0];
+        const status = document.getElementById('status');
+
+        if (!arcadiaFile || !yardiFile) {
+            alert("Please select both files first.");
+            return;
+        }
+
+        status.innerText = "Reading files... please wait.";
+
+        try {
+            const arcadiaData = await readExcel(arcadiaFile);
+            const yardiData = await readExcel(yardiFile);
+
+            status.innerText = "Processing matches...";
+
+            // 1. Normalize Yardi Data for fast lookup
+            // Key format: "ID|Date"
+            const yardiLookup = {};
+            yardiData.forEach(row => {
+                const id = String(row.accountId || "").replace('act_', '').trim();
+                
+                // We check all three possible date columns
+                const dates = [row.StmtDate, row.AvailableDateUnadjusted, row.intervalEndDate];
+                
+                dates.forEach(d => {
+                    if (d) {
+                        const dateStr = formatDate(d);
+                        const key = `${id}|${dateStr}`;
+                        if (!yardiLookup[key]) {
+                            yardiLookup[key] = {
+                                "Final 4 Biz Days": row["Final 4 Biz Days"] || "",
+                                "RCA": row["RCA"] || "",
+                                "RCA Details": row["RCA Details"] || ""
+                            };
+                        }
+                    }
+                });
+            });
+
+            // 2. Merge into Arcadia Data
+            const finalData = arcadiaData.map(row => {
+                const id = String(row["Account ID"] || "").replace('act_', '').trim();
+                const dateStr = formatDate(row["Invoice Date"]);
+                const key = `${id}|${dateStr}`;
+                
+                const match = yardiLookup[key] || { "Final 4 Biz Days": "", "RCA": "", "RCA Details": "" };
+                
+                return {
+                    ...row,
+                    "Final 4 Biz Days": match["Final 4 Biz Days"],
+                    "RCA": match["RCA"],
+                    "RCA Details": match["RCA Details"]
+                };
+            });
+
+            // 3. Export
+            const ws = XLSX.utils.json_to_sheet(finalData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Merged Data");
+            XLSX.writeFile(wb, "Combined_RCA_Report.xlsx");
+
+            status.innerText = "Success! File downloaded.";
+
+        } catch (e) {
+            console.error(e);
+            status.innerText = "Error processing files. Check console for details.";
+        }
+    });
+
+    function readExcel(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+                const firstSheet = workbook.SheetNames[0];
+                resolve(XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet]));
+            };
+            reader.onerror = reject;
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    function formatDate(date) {
+        if (!date) return "";
+        const d = new Date(date);
+        if (isNaN(d.getTime())) return String(date).split(' ')[0]; // Handle string dates
+        return d.toISOString().split('T')[0]; // Returns YYYY-MM-DD
+    }
+</script>
+
+</body>
+</html>
